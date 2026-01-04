@@ -1,0 +1,76 @@
+<?xml version="1.0"?>
+<robot name="three_link_arm">
+  <!-- Base Link -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <cylinder length="0.1" radius="0.2"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <!-- Link 1 -->
+  <link name="link1">
+    <visual>
+      <geometry>
+        <box size="0.5 0.1 0.1"/>
+      </geometry>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+    </visual>
+  </link>
+
+  <!-- Joint 1: Base to Link 1 -->
+  <!-- MDH: a=0, alpha=0, d=0, theta=variable -->
+  <joint name="joint1" type="revolute">
+    <parent link="base_link"/>
+    <child link="link1"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    <!-- Custom MDH parameters for this parser -->
+    <mdh a="0" alpha="-0.78" d="0" theta_offset="0"/>
+  </joint>
+
+  <!-- Link 2 -->
+  <link name="link2">
+    <visual>
+      <geometry>
+        <box size="0.5 0.1 0.1"/>
+      </geometry>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+    </visual>
+  </link>
+
+  <!-- Joint 2: Link 1 to Link 2 -->
+  <!-- MDH: a=0.5, alpha=0, d=0, theta=variable -->
+  <joint name="joint2" type="revolute">
+    <parent link="link1"/>
+    <child link="link2"/>
+    <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    <mdh a="0" alpha="1.57" d="1" theta_offset="0"/>
+  </joint>
+
+  <!-- Link 3 -->
+  <link name="link3">
+    <visual>
+      <geometry>
+        <box size="0.5 0.1 0.1"/>
+      </geometry>
+      <origin xyz="0.25 0 0" rpy="0 0 0"/>
+    </visual>
+  </link>
+
+  <!-- Joint 3: Link 2 to Link 3 -->
+  <!-- MDH: a=0.5, alpha=0, d=0, theta=variable -->
+  <joint name="joint3" type="revolute">
+    <parent link="link2"/>
+    <child link="link3"/>
+    <origin xyz="0.5 0 0" rpy="0 0 0"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-3.14" upper="3.14" effort="100" velocity="1"/>
+    <mdh a="0.0" alpha="1.57" d="1" theta_offset="0"/>
+  </joint>
+
+</robot>
