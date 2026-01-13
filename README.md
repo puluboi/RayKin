@@ -10,7 +10,7 @@ Currently implements robot loading from an urdf-style xml file, mdh-table modifi
 ### Next Features: 
 Plan is to implement a dampened minimal least square-based inverse kinematics solver. 
 ### End Goal:
-The end goal is to have a robot arm that can move objets
+The end goal is to have a robot arm that can move objects
 
 ### Videos / demos:
 
