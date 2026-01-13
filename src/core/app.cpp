@@ -18,6 +18,14 @@ App::App()
         }
     });
     
+    // Connect increment callback (uses Arm::incrementTargetAngle)
+    viz.setIncrementJointCallback([this](unsigned int armIdx, unsigned int jointIdx, double delta) {
+        auto arm = sim.getArm(armIdx);
+        if (arm) {
+            arm->incrementTargetAngle(jointIdx, delta);
+        }
+    });
+    
     // Connect angle getter to simulation
     viz.setGetAngleCallback([this](unsigned int armIdx, unsigned int jointIdx) -> double {
         auto arm = sim.getArm(armIdx);

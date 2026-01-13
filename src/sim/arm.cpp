@@ -26,13 +26,19 @@ Arm::Arm(Eigen::Vector3d origWorldPos_, Eigen::Quaterniond origWorldRot_, std::s
     while (joint)
     {
         XMLElement *mdh = joint->FirstChildElement("mdh");
+        XMLElement *limit = joint->FirstChildElement("limit");
+
         if (mdh)
         {
-            double a = 0, alpha = 0, dOffset = 0, theta_offset = 0;
+            double a = 0, alpha = 0, dOffset = 0, theta_offset = 0, maxTheta = 0, minTheta = -0;
             mdh->QueryDoubleAttribute("a", &a);
             mdh->QueryDoubleAttribute("alpha", &alpha);
             mdh->QueryDoubleAttribute("d", &dOffset);
-            mdh->QueryDoubleAttribute("theta_offset", &theta_offset);
+            if (limit)
+            {
+                limit->QueryDoubleAttribute("lower", &minTheta);
+                limit->QueryDoubleAttribute("upper", &maxTheta);
+            }
 
             bool isRevolute = true;
             const char *type = joint->Attribute("type");
@@ -41,8 +47,8 @@ Arm::Arm(Eigen::Vector3d origWorldPos_, Eigen::Quaterniond origWorldRot_, std::s
                 isRevolute = false;
             }
 
-            //               MDH(aPrev, alphaPrev, thetaCurr, dCurr, tCOffset, dCOffset, isRevolute)
-            tableMDH.emplace_back(a, alpha, 0.0, 0.0, theta_offset, dOffset, isRevolute);
+            //               MDH(aPrev, alphaPrev, thetaCurr, dCurr, tCOffset, dCOffset,minTheta, maxTheta, isRevolute)
+            tableMDH.emplace_back(a, alpha, 0.0, 0.0, theta_offset, dOffset, minTheta, maxTheta, isRevolute);
         }
         joint = joint->NextSiblingElement("joint");
     }
@@ -53,7 +59,7 @@ Arm::Arm(Eigen::Vector3d origWorldPos_, Eigen::Quaterniond origWorldRot_, std::s
     targetAngles.resize(noOfLinks, 0.0); // Initialize target angles to 0
 }
 
-bool Arm::setTargetAngle(unsigned int link, double angle)
+bool Arm::incrementTargetAngle(unsigned int link, double angle)
 {
     if (link >= targetAngles.size())
     {
@@ -61,7 +67,57 @@ bool Arm::setTargetAngle(unsigned int link, double angle)
     }
 
     std::lock_guard<std::mutex> lock(refreshMutex);
-    targetAngles[link] = angle;
+
+    // Compute new target and clamp to constraints
+    double newTarget = targetAngles[link] + angle;
+    if (newTarget > tableMDH[link].upperThetaConstraint)
+    {
+        targetAngles[link] = tableMDH[link].upperThetaConstraint;
+    }
+    else if (newTarget < tableMDH[link].lowerThetaConstraint)
+    {
+        targetAngles[link] = tableMDH[link].lowerThetaConstraint;
+    }
+    else
+    {
+        targetAngles[link] = newTarget;
+    }
+
+    // Only add to refreshLinks if not already present (prevent duplicates)
+    if (std::find(refreshLinks.begin(), refreshLinks.end(), link) == refreshLinks.end())
+    {
+        refreshLinks.push_back(link);
+    }
+
+    // Mark this link as needing update so updateArm() doesn't skip it
+    if (lowestChangedLink > link)
+    {
+        lowestChangedLink = link;
+    }
+    return true;
+}
+
+bool Arm::setTargetAngle(unsigned int link, double angle)
+{
+
+    if (link >= targetAngles.size())
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(refreshMutex);
+    if (angle > tableMDH[link].upperThetaConstraint)
+    {
+        targetAngles[link] = tableMDH[link].upperThetaConstraint;
+    }
+    else if (angle < tableMDH[link].lowerThetaConstraint)
+    {
+        targetAngles[link] = tableMDH[link].lowerThetaConstraint;
+    }
+    else
+    {
+        targetAngles[link] = angle;
+    }
 
     // Only add to refreshLinks if not already present (prevent duplicates)
     if (std::find(refreshLinks.begin(), refreshLinks.end(), link) == refreshLinks.end())
@@ -91,8 +147,8 @@ std::vector<MDHRow> Arm::getMDHTable() const
     std::lock_guard<std::mutex> lock(refreshMutex);
     std::vector<MDHRow> rows;
     rows.reserve(tableMDH.size());
-    
-    for (const auto& mdh : tableMDH)
+
+    for (const auto &mdh : tableMDH)
     {
         MDHRow row;
         row.alpha = mdh.alphaPrev;
@@ -102,20 +158,22 @@ std::vector<MDHRow> Arm::getMDHTable() const
         row.thetaOffset = mdh.tCOffset;
         row.dOffset = mdh.dCOffset;
         row.isRevolute = mdh.isRevolute;
+        row.maxTheta = mdh.upperThetaConstraint;
+        row.minTheta = mdh.lowerThetaConstraint;
         rows.push_back(row);
     }
     return rows;
 }
 
-bool Arm::setMDHParam(unsigned int link, const std::string& param, double value)
+bool Arm::setMDHParam(unsigned int link, const std::string &param, double value)
 {
     if (link >= tableMDH.size())
     {
         return false;
     }
-    
+
     std::lock_guard<std::mutex> lock(refreshMutex);
-    
+
     // All MDH params are now modifiable
     if (param == "alpha")
     {
@@ -146,12 +204,20 @@ bool Arm::setMDHParam(unsigned int link, const std::string& param, double value)
     {
         tableMDH[link].tCOffset = value;
     }
+    else if (param == "minTheta")
+    {
+        tableMDH[link].lowerThetaConstraint = value;
+    }
+        else if (param == "maxTheta")
+    {
+        tableMDH[link].upperThetaConstraint = value;
+    }
     else
     {
         std::cerr << "Unknown MDH param: " << param << std::endl;
         return false;
     }
-    
+
     if (lowestChangedLink > link)
     {
         lowestChangedLink = link;
@@ -166,7 +232,6 @@ bool Arm::updateArm()
     {
         return false;
     }
-
 
     std::lock_guard<std::mutex> lock(refreshMutex);
 
@@ -219,16 +284,14 @@ bool Arm::updateArm()
     }
     refreshLinks = std::move(stillActive);
 
-   if (lowestChangedLink >= noOfLinks)
+    if (lowestChangedLink >= noOfLinks)
     {
-        // Nothing to update
-        std::cout << "lowest changed link is more than noOfLinks" << lowestChangedLink << std::endl;
+        // Nothing to update - this is normal when no links are changing
         return true;
     }
     // Initialize cumulative transform
     // MDH convention: T_i = RotZ(theta) * TransZ(d) * TransX(a) * RotX(alpha)
     Eigen::Isometry3d cumTransform = Eigen::Isometry3d::Identity();
-    std::cout << "Lowest Changed Link: " << lowestChangedLink << std::endl;
     if (lowestChangedLink > 0)
     {
         cumTransform = tableLinkTransforms[lowestChangedLink - 1];
@@ -248,10 +311,10 @@ bool Arm::updateArm()
         double theta = mdh.thetaCurr + mdh.tCOffset;
         double d = mdh.dCurr + mdh.dCOffset;
 
-        // MDH transform:
+        // MDH transform: negate theta for right-hand rule compliance
         linkTransform.translate(Eigen::Vector3d(mdh.aPrev, 0.0, 0.0));
         linkTransform.rotate(Eigen::AngleAxisd(mdh.alphaPrev, Eigen::Vector3d::UnitX()));
-        linkTransform.rotate(Eigen::AngleAxisd(theta, Eigen::Vector3d::UnitZ()));
+        linkTransform.rotate(Eigen::AngleAxisd(-theta, Eigen::Vector3d::UnitZ()));
         linkTransform.translate(Eigen::Vector3d(0.0, 0.0, d));
 
         cumTransform = cumTransform * linkTransform;
@@ -341,3 +404,9 @@ bool Arm::addLinkAngle(unsigned int link, double angle)
 
     return true;
 }
+Eigen::Vector<double, 6> Arm::computeJointJacobianColumn(unsigned int joint) const
+{ 
+     
+      
+       
+};

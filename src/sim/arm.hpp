@@ -20,9 +20,18 @@ struct MDH
 
     bool isRevolute; // False if prismatic
 
-    MDH(double aPrev_, double alphaPrev_, double thetaCurr_, double dCurr_, double tCOffset_, double dCOffset_, bool isRevolute_)
-        : aPrev(aPrev_), alphaPrev(alphaPrev_), thetaCurr(thetaCurr_), dCurr(dCurr_), tCOffset(tCOffset_), dCOffset(dCOffset_), isRevolute(isRevolute_)
+    double upperThetaConstraint;
+    double lowerThetaConstraint;
+
+    double upperDConstraint;
+    double lowerDConstraint;
+
+
+
+    MDH(double aPrev_, double alphaPrev_, double thetaCurr_, double dCurr_, double tCOffset_, double dCOffset_, double lowerThetaConstraint_, double upperThetaConstraint_, bool isRevolute_)
+        : aPrev(aPrev_), alphaPrev(alphaPrev_), thetaCurr(thetaCurr_), dCurr(dCurr_), tCOffset(tCOffset_), dCOffset(dCOffset_), lowerThetaConstraint(lowerThetaConstraint_), upperThetaConstraint(upperThetaConstraint_), isRevolute(isRevolute_)
     {
+
     }
 };
 
@@ -35,6 +44,8 @@ struct MDHRow
     double theta;       // θ_i (current value)
     double thetaOffset; // θ offset
     double dOffset;     // d offset
+    double maxTheta;    // max θ_i
+    double minTheta;    // min θ_i
     bool isRevolute;    // R or P
 };
 
@@ -42,8 +53,9 @@ class Arm
 {
 public:
     Arm(Eigen::Vector3d origWorldPos_, Eigen::Quaterniond origWorldRot_, const std::string pathToURDF);
+    bool incrementTargetAngle(unsigned int link, double angle);
     bool setTargetAngle(unsigned int link, double rot);
-    
+
     /// Get current angle of a specific joint in radians
     double getCurrentAngle(unsigned int link) const;
     
@@ -66,6 +78,8 @@ public:
 private:
     bool setLinkAngle(unsigned int link, double angle);
     bool addLinkAngle(unsigned int link, double angle);
+
+    Eigen::Vector<double, 6> computeJointJacobianColumn(unsigned int joint) const;
 
     bool setLinkLength(unsigned int link, double length);
     bool addLinkLength(unsigned int link, double length);

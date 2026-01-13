@@ -19,13 +19,13 @@ Viz::Viz(const float fov, const int screenW, const int screenH) : screenWidth(sc
     cubeSize = {0.10f, 0.10f, 0.10f};
     sensitivity = 0.05f;
     speed = 0.1f;
-    
+
     jointSelected = false;
     textInputMode = false;
     currentTargetAngle = 0.0;
     selectedArmIndex = 0;
     selectedJointIndex = 0;
-    
+
     // MDH table mode init
     mdhTableMode = false;
     mdhSelectedRow = -1;
@@ -43,6 +43,11 @@ void Viz::setSimControlCallback(std::function<void(unsigned int, unsigned int, d
     controlJoint = callback;
 }
 
+void Viz::setIncrementJointCallback(std::function<void(unsigned int, unsigned int, double)> callback)
+{
+    incrementJoint = callback;
+}
+
 void Viz::setGetAngleCallback(std::function<double(unsigned int, unsigned int)> callback)
 {
     getCurrentAngle = callback;
@@ -53,7 +58,7 @@ void Viz::setGetMDHTableCallback(std::function<std::vector<MDHRow>(unsigned int)
     getMDHTable = callback;
 }
 
-void Viz::setMDHControlCallback(std::function<bool(unsigned int, unsigned int, const std::string&, double)> callback)
+void Viz::setMDHControlCallback(std::function<bool(unsigned int, unsigned int, const std::string &, double)> callback)
 {
     setMDHParam = callback;
 }
@@ -65,12 +70,12 @@ void Viz::update()
     {
         cachedSnapshot = fetchSimData();
     }
-    
+
     // Refresh MDH table if in MDH mode
     if (mdhTableMode && getMDHTable)
     {
         cachedMDHTable = getMDHTable(selectedArmIndex);
-        
+
         // Update table position relative to arm's current position
         if (cachedSnapshot && selectedArmIndex < cachedSnapshot->armTransforms.size())
         {
@@ -84,29 +89,28 @@ void Viz::update()
                     com += t.translation();
                 }
                 com /= transforms.size();
-                
+
                 // Store COM in raylib coordinates
                 armCenterOfMass = {(float)com.x(), (float)com.z(), (float)com.y()};
-                
+
                 // Position table offset from COM in world space
                 mdhTablePosition3D = {
                     armCenterOfMass.x + 3.f,
                     armCenterOfMass.y + 1.5f,
-                    armCenterOfMass.z
-                };
+                    armCenterOfMass.z};
             }
         }
     }
 
     // Handle joint selection with mouse
     handleJointSelection();
-    
+
     // Handle arm selection for MDH view (M key toggles)
     handleArmSelection();
 
     // Update selected joint angle with keyboard
     updateSelectedJoint();
-    
+
     // Handle MDH table editing
     updateMDHTable();
 
@@ -158,7 +162,7 @@ void Viz::handleJointSelection()
             jointSelected = true;
             selectedArmIndex = hitArmIdx;
             selectedJointIndex = hitJointIdx;
-            
+
             // Fetch actual current angle from simulation
             if (getCurrentAngle)
             {
@@ -168,9 +172,9 @@ void Viz::handleJointSelection()
             {
                 currentTargetAngle = 0.0;
             }
-            
+
             std::cout << "Selected Joint - Arm: " << selectedArmIndex
-                      << ", Joint: " << selectedJointIndex 
+                      << ", Joint: " << selectedJointIndex
                       << ", Current angle: " << currentTargetAngle << " rad ("
                       << (currentTargetAngle * 180.0 / M_PI) << " deg)" << std::endl;
         }
@@ -204,7 +208,7 @@ void Viz::updateSelectedJoint()
         while (key > 0)
         {
             // Allow digits, decimal point, and minus sign
-            if ((key >= '0' && key <= '9') || key == '.' || 
+            if ((key >= '0' && key <= '9') || key == '.' ||
                 (key == '-' && angleInputBuffer.empty()))
             {
                 if (angleInputBuffer.length() < maxInputLength)
@@ -265,15 +269,19 @@ void Viz::updateSelectedJoint()
         currentTargetAngle -= angleIncrement;
         angleChanged = true;
     }
-    else if (IsKeyDown(KEY_PAGE_UP)) // Use Page Up instead of UP arrow (conflicts with camera)
+    else if (IsKeyDown(KEY_PAGE_UP) && incrementJoint && !IsKeyDown(KEY_LEFT_CONTROL) && !IsKeyDown(KEY_RIGHT_CONTROL)) // Use Page Up for angle, but not with Ctrl
     {
-        currentTargetAngle += angleIncrement * 0.5f;
-        angleChanged = true;
+        incrementJoint(selectedArmIndex, selectedJointIndex, angleIncrement * 0.5f);
+        // Refresh current angle from simulation
+        if (getCurrentAngle)
+            currentTargetAngle = getCurrentAngle(selectedArmIndex, selectedJointIndex);
     }
-    else if (IsKeyDown(KEY_PAGE_DOWN)) // Use Page Down instead of DOWN arrow (conflicts with camera)
+    else if (IsKeyDown(KEY_PAGE_DOWN) && incrementJoint && !IsKeyDown(KEY_LEFT_CONTROL) && !IsKeyDown(KEY_RIGHT_CONTROL)) // Use Page Down for angle, but not with Ctrl
     {
-        currentTargetAngle -= angleIncrement * 0.5f;
-        angleChanged = true;
+        incrementJoint(selectedArmIndex, selectedJointIndex, -angleIncrement * 0.5f);
+        // Refresh current angle from simulation
+        if (getCurrentAngle)
+            currentTargetAngle = getCurrentAngle(selectedArmIndex, selectedJointIndex);
     }
 
     // Reset angle to zero
@@ -281,6 +289,37 @@ void Viz::updateSelectedJoint()
     {
         currentTargetAngle = 0.0;
         angleChanged = true;
+    }
+
+    // Navigate between joints with Ctrl+PageUp/PageDown
+    if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL))
+    {
+        if (IsKeyPressed(KEY_PAGE_UP) && cachedSnapshot)
+        {
+            // Move to next joint (wraps within same arm)
+            const auto &transforms = cachedSnapshot->armTransforms[selectedArmIndex];
+            if (!transforms.empty())
+            {
+                selectedJointIndex = (selectedJointIndex + 1) % transforms.size();
+                if (getCurrentAngle)
+                    currentTargetAngle = getCurrentAngle(selectedArmIndex, selectedJointIndex);
+                std::cout << "Switched to Joint " << selectedJointIndex << std::endl;
+            }
+        }
+        else if (IsKeyPressed(KEY_PAGE_DOWN) && cachedSnapshot)
+        {
+            // Move to previous joint (wraps within same arm)
+            const auto &transforms = cachedSnapshot->armTransforms[selectedArmIndex];
+            if (!transforms.empty())
+            {
+                selectedJointIndex = (selectedJointIndex == 0) 
+                    ? transforms.size() - 1 
+                    : selectedJointIndex - 1;
+                if (getCurrentAngle)
+                    currentTargetAngle = getCurrentAngle(selectedArmIndex, selectedJointIndex);
+                std::cout << "Switched to Joint " << selectedJointIndex << std::endl;
+            }
+        }
     }
 
     // Deselect joint
@@ -306,29 +345,29 @@ void Viz::renderSelectionUI()
         int y = 40;
         DrawText("JOINT SELECTED", 10, y, 20, GREEN);
         y += 25;
-        
+
         std::stringstream ss;
-        ss << "Arm: " << selectedArmIndex << " | Joint: " << selectedJointIndex;
+        ss << "Arm: " << selectedArmIndex << " | Joint: " << selectedJointIndex+1;
         DrawText(ss.str().c_str(), 10, y, 16, DARKGREEN);
         y += 20;
-        
+
         ss.str("");
-        ss << "Target Angle: " << std::fixed << std::setprecision(2) 
+        ss << "Target Angle: " << std::fixed << std::setprecision(2)
            << currentTargetAngle << " rad (" << (currentTargetAngle * 180.0 / M_PI) << " deg)";
         DrawText(ss.str().c_str(), 10, y, 16, DARKGREEN);
         y += 30;
-        
+
         // Show text input mode
         if (textInputMode)
         {
             DrawText("TEXT INPUT MODE - Enter angle in degrees:", 10, y, 18, ORANGE);
             y += 25;
-            
+
             // Draw input buffer with cursor
             std::string displayText = angleInputBuffer + "_";
             DrawText(displayText.c_str(), 10, y, 24, ORANGE);
             y += 30;
-            
+
             DrawText("ENTER: Apply | BACKSPACE: Delete | ESC: Cancel", 10, y, 12, GRAY);
         }
         else
@@ -341,6 +380,8 @@ void Viz::renderSelectionUI()
             DrawText("  +/- : Adjust angle (large step)", 10, y, 12, GRAY);
             y += 15;
             DrawText("  PgUp/PgDn : Adjust angle (small step)", 10, y, 12, GRAY);
+            y += 15;
+            DrawText("  Ctrl+PgUp/PgDn : Cycle joints", 10, y, 12, GRAY);
             y += 15;
             DrawText("  R : Reset to 0", 10, y, 12, GRAY);
             y += 15;
@@ -357,7 +398,7 @@ void Viz::updateCamera()
     // Skip camera movement if in text input mode
     if (textInputMode)
         return;
-        
+
     // Update
     //----------------------------------------------------------------------------------
     if (IsCursorHidden())
@@ -406,19 +447,19 @@ void Viz::render()
     }
 
     DrawGrid(10, 1.0f);
-    
+
     // Render 3D MDH elements before ending 3D mode
     if (mdhTableMode)
     {
         renderMDHTableUI();
     }
-    
+
     EndMode3D();
 
     // Render UI overlays
     renderSelectionUI();
     renderMDHTable2D();
-    
+
     DrawText("Right click: camera | Click joint: select | Click near arm: MDH table", 10, screenHeight - 30, 10, GRAY);
     DrawFPS(10, 10);
     EndDrawing();
@@ -440,7 +481,7 @@ void Viz::renderArms(const SimSnapshot &snapshot)
     {
         const auto &transforms = snapshot.armTransforms[armIdx];
         Color armColor = armColors[armIdx % numColors];
-        
+
         // Highlight selected arm when MDH table is shown
         bool isSelectedArm = (mdhTableMode && armIdx == selectedArmIndex);
         if (isSelectedArm)
@@ -468,12 +509,12 @@ void Viz::renderArms(const SimSnapshot &snapshot)
         {
             Eigen::Vector3d pos = transforms[i].translation();
             Vector3 spherePos = {(float)pos.x(), (float)pos.z(), (float)pos.y()};
-            
+
             // Highlight selected joint
             bool isSelectedJoint = (jointSelected && armIdx == selectedArmIndex && i == selectedJointIndex);
             if (isSelectedJoint)
             {
-                
+
                 // Draw bright highlight for selected joint
                 DrawSphere(spherePos, 0.08f, armColor);
                 DrawSphere(spherePos, 0.10f, Fade(YELLOW, 0.6));
@@ -522,7 +563,7 @@ void Viz::renderArmLink(const Eigen::Isometry3d &transform, const Eigen::Isometr
         // Draw cylinder with thicker radius and outline if highlighted
         float radius = highlighted ? 0.05f : 0.03f;
         DrawCylinderEx(start, end, radius, radius, 8, color);
-        
+
         // Add subtle outline for highlighted arm
         if (highlighted)
         {
@@ -552,9 +593,9 @@ void Viz::drawAxis(const Eigen::Isometry3d &transform, float axisLength)
     // Y-axis (Green) - column 1 of rotation matrix
     Eigen::Vector3d yAxis = rotation.col(1) * axisLength;
     Vector3 yEnd = {
-        (float)(origin.x() + yAxis.x()),
-        (float)(origin.z() + yAxis.z()), // Swap Y/Z
-        (float)(origin.y() + yAxis.y())};
+        (float)(origin.x() - yAxis.x()), // Match right hand rule
+        (float)(origin.z() - yAxis.z()), // Swap Y/Z
+        (float)(origin.y() - yAxis.y())};
     DrawLine3D(originRaylib, yEnd, GREEN);
     DrawCylinderEx(originRaylib, yEnd, 0.02f, 0.01f, 6, GREEN);
 
@@ -574,25 +615,25 @@ void Viz::handleArmSelection()
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !IsCursorHidden() && cachedSnapshot && !textInputMode && !jointSelected)
     {
         ray = GetMouseRay(GetMousePosition(), camera);
-        
+
         // Check proximity to any arm
         float closestDistance = 1000000.0f;
         bool foundArm = false;
         unsigned int hitArmIdx = 0;
-        
+
         for (size_t armIdx = 0; armIdx < cachedSnapshot->armTransforms.size(); ++armIdx)
         {
             const auto &transforms = cachedSnapshot->armTransforms[armIdx];
-            
+
             // Check distance to each link segment and joints
             for (size_t i = 0; i < transforms.size(); ++i)
             {
                 Eigen::Vector3d pos = transforms[i].translation();
                 Vector3 sphereCenter = {(float)pos.x(), (float)pos.z(), (float)pos.y()};
-                
+
                 // Larger radius for proximity detection (not exact collision)
                 RayCollision hit = GetRayCollisionSphere(ray, sphereCenter, 0.3f);
-                
+
                 if (hit.hit && hit.distance < closestDistance)
                 {
                     closestDistance = hit.distance;
@@ -601,7 +642,7 @@ void Viz::handleArmSelection()
                 }
             }
         }
-        
+
         if (foundArm)
         {
             // Toggle MDH table for this arm
@@ -621,7 +662,7 @@ void Viz::handleArmSelection()
                 mdhSelectedRow = -1;
                 mdhSelectedCol = -1;
                 mdhInputBuffer.clear();
-                
+
                 // Calculate center of mass and table position
                 const auto &transforms = cachedSnapshot->armTransforms[hitArmIdx];
                 Eigen::Vector3d com(0, 0, 0);
@@ -630,27 +671,26 @@ void Viz::handleArmSelection()
                     com += t.translation();
                 }
                 com /= transforms.size();
-                
+
                 // Store COM in raylib coordinates
                 armCenterOfMass = {(float)com.x(), (float)com.z(), (float)com.y()};
-                
+
                 // Position table offset from COM
                 mdhTablePosition3D = {
                     armCenterOfMass.x + 2.0f,
                     armCenterOfMass.y + 1.0f,
-                    armCenterOfMass.z
-                };
-                
+                    armCenterOfMass.z};
+
                 if (getMDHTable)
                 {
                     cachedMDHTable = getMDHTable(selectedArmIndex);
                 }
-                
+
                 std::cout << "MDH Table mode ON for Arm " << selectedArmIndex << std::endl;
             }
         }
     }
-    
+
     // Close table with M key or ESC
     if (mdhTableMode && !textInputMode)
     {
@@ -668,7 +708,7 @@ void Viz::updateMDHTable()
 {
     if (!mdhTableMode)
         return;
-    
+
     // Handle text input mode
     if (textInputMode)
     {
@@ -676,7 +716,7 @@ void Viz::updateMDHTable()
         int key = GetCharPressed();
         while (key > 0)
         {
-            if ((key >= '0' && key <= '9') || key == '.' || 
+            if ((key >= '0' && key <= '9') || key == '.' ||
                 (key == '-' && mdhInputBuffer.empty()))
             {
                 if (mdhInputBuffer.length() < (size_t)maxInputLength)
@@ -686,21 +726,21 @@ void Viz::updateMDHTable()
             }
             key = GetCharPressed();
         }
-        
+
         if (IsKeyPressed(KEY_BACKSPACE) && !mdhInputBuffer.empty())
         {
             mdhInputBuffer.pop_back();
         }
-        
+
         // Apply edit
         if (IsKeyPressed(KEY_ENTER) && !mdhInputBuffer.empty())
         {
             try
             {
                 double value = std::stod(mdhInputBuffer);
-                const char* paramNames[] = {"alpha", "a", "d_offset", "theta_offset"};
+                const char* paramNames[] = {"alpha", "a", "d_offset", "theta_offset", "minTheta", "maxTheta"};
                 std::string param = paramNames[mdhSelectedCol];
-                
+
                 if (setMDHParam)
                 {
                     bool success = setMDHParam(selectedArmIndex, mdhSelectedRow, param, value);
@@ -717,7 +757,7 @@ void Viz::updateMDHTable()
             textInputMode = false;
             mdhInputBuffer.clear();
         }
-        
+
         // Cancel edit
         if (IsKeyPressed(KEY_ESCAPE))
         {
@@ -732,7 +772,7 @@ void Viz::renderMDHTableUI()
 {
     if (!mdhTableMode)
         return;
-    
+
     // Draw 3D connection line and marker (while still in 3D mode)
     DrawLine3D(mdhTablePosition3D, armCenterOfMass, BLACK);
     DrawSphere(armCenterOfMass, 0.1f, BLACK);
@@ -742,23 +782,24 @@ void Viz::renderMDHTable2D()
 {
     if (!mdhTableMode)
         return;
-    
+
     // Project 3D table position to 2D screen space
     Vector2 tablePos2D = GetWorldToScreen(mdhTablePosition3D, camera);
-    
+
     // Table dimensions
     const int rowHeight = 22;
-    const int colWidths[] = {35, 65, 65, 65, 65, 35}; // Link, α, a, d_off, θ_off, Type
+    // Link, alpha, a, d_off, theta_off, lower, upper, Type
+    const int colWidths[] = {35, 65, 65, 65, 65, 65, 65, 35}; // Link, α, a, d_off, θ_off, Type
     const int headerHeight = 25;
-    int tableWidth = 35 + 65 + 65 + 65 + 65 + 35;
+    int tableWidth = 35 + 65 + 65 + 65 + 65 + 65 + 65 + 35;
     int tableHeight = headerHeight + (cachedMDHTable.size() + 1) * rowHeight + 40;
-    
+
     int tableX = (int)tablePos2D.x - tableWidth / 2;
     int tableY = (int)tablePos2D.y;
-    
+
     // Better validation and positioning
     // Check if position is valid and on-screen
-    if (tablePos2D.x < -10000 || tablePos2D.y < -10000 || 
+    if (tablePos2D.x < -10000 || tablePos2D.y < -10000 ||
         tablePos2D.x > screenWidth + 10000 || tablePos2D.y > screenHeight + 10000)
     {
         // Position is invalid (likely behind camera), place in corner
@@ -768,24 +809,28 @@ void Viz::renderMDHTable2D()
     else
     {
         // Clamp to screen bounds
-        if (tableX < 10) tableX = 10;
-        if (tableY < 50) tableY = 50;
-        if (tableX + tableWidth > screenWidth - 10) tableX = screenWidth - tableWidth - 10;
-        if (tableY + tableHeight > screenHeight - 50) tableY = screenHeight - tableHeight - 10;
+        if (tableX < 10)
+            tableX = 10;
+        if (tableY < 50)
+            tableY = 50;
+        if (tableX + tableWidth > screenWidth - 10)
+            tableX = screenWidth - tableWidth - 10;
+        if (tableY + tableHeight > screenHeight - 50)
+            tableY = screenHeight - tableHeight - 10;
     }
-    
+
     // Background panel with transparency
-    DrawRectangle(tableX - 10, tableY - 20, tableWidth + 20, tableHeight+20, Fade(BLACK, 0.15f));
-    DrawRectangleLines(tableX - 10, tableY - 20, tableWidth + 20, tableHeight+20, BLACK);
-    
+    DrawRectangle(tableX - 10, tableY - 20, tableWidth + 20, tableHeight + 20, Fade(BLACK, 0.15f));
+    DrawRectangleLines(tableX - 10, tableY - 20, tableWidth + 20, tableHeight + 20, BLACK);
+
     // Title
     std::stringstream title;
     title << "MDH Table - Arm " << selectedArmIndex;
     DrawText(title.str().c_str(), tableX, tableY, 14, BLACK);
     DrawText("(Click cell to edit, ESC/M to close)", tableX, tableY + 15, 10, GRAY);
-    
+
     int y = tableY + headerHeight + 15;
-    
+
     // Header row
     int x = tableX;
     DrawText("Lnk", x, y, 11, BLACK); x += colWidths[0];
@@ -793,27 +838,29 @@ void Viz::renderMDHTable2D()
     DrawText("a", x, y, 11, BLACK); x += colWidths[2];
     DrawText("d_off", x, y, 11, BLACK); x += colWidths[3];
     DrawText("th_off", x, y, 11, BLACK); x += colWidths[4];
+    DrawText("minTheta", x, y, 11, BLACK); x += colWidths[5];
+    DrawText("maxTheta", x, y, 11, BLACK); x += colWidths[6];
     DrawText("Type", x, y, 11, BLACK);
     
     y += rowHeight;
     DrawLine(tableX, y - 2, tableX + tableWidth, y - 2, BLACK);
-    
+
     // Mouse position for cell detection
     Vector2 mousePos = GetMousePosition();
     bool mouseClicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !textInputMode;
-    
+
     // Data rows
     for (size_t i = 0; i < cachedMDHTable.size(); ++i)
     {
-        const auto& row = cachedMDHTable[i];
+        const auto &row = cachedMDHTable[i];
         x = tableX;
-        
+
         bool isSelectedRow = (mdhSelectedRow == (int)i);
-        
+
         // Check mouse hover over row
         bool mouseOverRow = (mousePos.x >= tableX && mousePos.x <= tableX + tableWidth &&
-                            mousePos.y >= y - 2 && mousePos.y <= y + rowHeight);
-        
+                             mousePos.y >= y - 2 && mousePos.y <= y + rowHeight);
+
         if (mouseOverRow && !textInputMode)
         {
             DrawRectangle(tableX - 5, y - 2, tableWidth + 10, rowHeight, Fade(YELLOW, 0.2f));
@@ -822,23 +869,24 @@ void Viz::renderMDHTable2D()
         {
             DrawRectangle(tableX - 5, y - 2, tableWidth + 10, rowHeight, Fade(BLUE, 0.3f));
         }
-        
+
         std::stringstream ss;
-        
+
         // Link number
         ss << i + 1;
-        DrawText(ss.str().c_str(), x+5, y, 11, Fade(BLACK,0.8f));
+        DrawText(ss.str().c_str(), x + 5, y, 11, Fade(BLACK, 0.8f));
         x += colWidths[0];
-        
+
         // Helper to draw cells and detect clicks
-        auto drawCell = [&](int col, double value) {
+        auto drawCell = [&](int col, double value)
+        {
             int cellStartX = x;
             int cellWidth = colWidths[col + 1];
-            
+
             // Check if mouse is over this cell
             bool mouseOverCell = (mousePos.x >= cellStartX && mousePos.x < cellStartX + cellWidth &&
-                                 mousePos.y >= y - 2 && mousePos.y <= y + rowHeight);
-            
+                                  mousePos.y >= y - 2 && mousePos.y <= y + rowHeight);
+
             // Handle click on cell
             if (mouseOverCell && mouseClicked)
             {
@@ -846,10 +894,10 @@ void Viz::renderMDHTable2D()
                 mdhSelectedCol = col;
                 textInputMode = true;
                 mdhInputBuffer.clear();
-                const char* colNames[] = {"alpha", "a", "d_offset", "theta_offset"};
+                const char* colNames[] = {"alpha", "a", "d_offset", "theta_offset", "maxTheta", "minTheta"};
                 std::cout << "Editing " << colNames[col] << " at row " << i << std::endl;
             }
-            
+
             // Draw cell content
             if (textInputMode && isSelectedRow && mdhSelectedCol == col)
             {
@@ -858,31 +906,26 @@ void Viz::renderMDHTable2D()
             }
             else
             {
-                ss.str(""); ss << std::fixed << std::setprecision(2) << value;
-                Color cellColor = (isSelectedRow && mdhSelectedCol == col) ? GREEN : 
-                                 (mouseOverCell ? YELLOW : BLACK);
-                DrawText(ss.str().c_str(), x, y, 11, Fade(cellColor,0.8));
+                ss.str("");
+                ss << std::fixed << std::setprecision(2) << value;
+                Color cellColor = (isSelectedRow && mdhSelectedCol == col) ? GREEN : (mouseOverCell ? YELLOW : BLACK);
+                DrawText(ss.str().c_str(), x, y, 11, Fade(cellColor, 0.8));
             }
         };
-        
-        drawCell(0, row.alpha);
-        x += colWidths[1];
-        
-        drawCell(1, row.a);
-        x += colWidths[2];
-        
-        drawCell(2, row.dOffset);
-        x += colWidths[3];
-        
-        drawCell(3, row.thetaOffset);
-        x += colWidths[4];
+        // Draw the six editable numeric columns
+        drawCell(0, row.alpha);       x += colWidths[1];
+        drawCell(1, row.a);           x += colWidths[2];
+        drawCell(2, row.dOffset);     x += colWidths[3];
+        drawCell(3, row.thetaOffset); x += colWidths[4];
+        drawCell(4, row.minTheta);  x += colWidths[5];
+        drawCell(5, row.maxTheta);  x += colWidths[6];
         
         // Type (not editable)
         DrawText(row.isRevolute ? "R" : "P", x, y, 11, row.isRevolute ? SKYBLUE : MAGENTA);
         
         y += rowHeight;
     }
-    
+
     // Instructions
     y += 10;
     DrawText("Click cell to edit | ENTER: Apply | ESC: Cancel", tableX, y, 10, GRAY);

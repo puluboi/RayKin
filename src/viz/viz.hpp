@@ -20,6 +20,7 @@ public:
 
     // Set callback to modify joint angles
     void setSimControlCallback(std::function<void(unsigned int armIdx, unsigned int jointIdx, double angle)> callback);
+    void setIncrementJointCallback(std::function<void(unsigned int armIdx, unsigned int jointIdx, double delta)> callback);
     
     // Set callback to get current joint angle
     void setGetAngleCallback(std::function<double(unsigned int armIdx, unsigned int jointIdx)> callback);
@@ -58,6 +59,7 @@ private:
     // Simulation data callback
     std::function<std::shared_ptr<SimSnapshot>()> fetchSimData;
     std::function<void(unsigned int, unsigned int, double)> controlJoint;
+    std::function<void(unsigned int, unsigned int, double)> incrementJoint;
     std::function<double(unsigned int, unsigned int)> getCurrentAngle;
     std::shared_ptr<SimSnapshot> cachedSnapshot;
 

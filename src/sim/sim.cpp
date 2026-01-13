@@ -11,7 +11,7 @@ Sim::Sim() : running(true), testSwingEnabled(true)
 
 void Sim::run()
 {
-    createArm("assets/URDF_example.xml", Eigen::Vector3d(0.0, 0.0, 0.0), Eigen::Quaterniond::Identity());
+    createArm("assets/URDF_exerc.xml", Eigen::Vector3d(0.0, 0.0, 0.0), Eigen::Quaterniond::Identity());
     
     auto startTime = std::chrono::steady_clock::now();
     setTestSwingEnabled(false);
