@@ -208,7 +208,7 @@ bool Arm::setMDHParam(unsigned int link, const std::string &param, double value)
     {
         tableMDH[link].lowerThetaConstraint = value;
     }
-        else if (param == "maxTheta")
+    else if (param == "maxTheta")
     {
         tableMDH[link].upperThetaConstraint = value;
     }
@@ -281,6 +281,7 @@ bool Arm::updateArm()
         {
             stillActive.push_back(link_);
         }
+        // std::cout << "Jacobian [" << link_ << "]" << computeJacobian(link_) << std::endl;
     }
     refreshLinks = std::move(stillActive);
 
@@ -404,9 +405,108 @@ bool Arm::addLinkAngle(unsigned int link, double angle)
 
     return true;
 }
-Eigen::Vector<double, 6> Arm::computeJointJacobianColumn(unsigned int joint) const
-{ 
-     
-      
-       
-};
+/// ...existing code...
+Eigen::MatrixXd Arm::computeJacobian(unsigned int link) const
+{
+    if (link >= noOfLinks || tableMDH.empty())
+    {
+        return Eigen::MatrixXd::Zero(6, link + 1);
+    }
+
+    Eigen::MatrixXd J = Eigen::MatrixXd::Zero(6, link + 1);
+
+    // Build transforms matching updateArm() exactly
+    std::vector<Eigen::Isometry3d> transforms(link + 1);
+    std::vector<Eigen::Isometry3d> jointAxisFrames(link + 1); // Frame where z is rotation axis
+
+    Eigen::Isometry3d cumTransform = Eigen::Isometry3d::Identity();
+    cumTransform.translate(origWorldPos);
+    cumTransform.rotate(origWorldRot);
+
+    for (size_t i = 0; i <= link; ++i)
+    {
+        const MDH &mdh = tableMDH[i];
+
+        // Store frame after a and alpha (joint rotation axis is z of this frame)
+        Eigen::Isometry3d preTheta = cumTransform;
+        preTheta.translate(Eigen::Vector3d(mdh.aPrev, 0.0, 0.0));
+        preTheta.rotate(Eigen::AngleAxisd(mdh.alphaPrev, Eigen::Vector3d::UnitX()));
+        jointAxisFrames[i] = preTheta;
+
+        double theta = mdh.thetaCurr + mdh.tCOffset;
+        double d = mdh.dCurr + mdh.dCOffset;
+
+        // Complete MDH transform
+        Eigen::Isometry3d linkTransform = Eigen::Isometry3d::Identity();
+        linkTransform.translate(Eigen::Vector3d(mdh.aPrev, 0.0, 0.0));
+        linkTransform.rotate(Eigen::AngleAxisd(mdh.alphaPrev, Eigen::Vector3d::UnitX()));
+        linkTransform.rotate(Eigen::AngleAxisd(-theta, Eigen::Vector3d::UnitZ()));
+        linkTransform.translate(Eigen::Vector3d(0.0, 0.0, d));
+
+        cumTransform = cumTransform * linkTransform;
+        transforms[i] = cumTransform;
+    }
+
+    Eigen::Vector3d p_e = transforms[link].translation();
+
+    for (size_t i = 0; i <= link; ++i)
+    {
+        // Z-axis at joint i (negated due to -theta in forward kinematics)
+        Eigen::Vector3d z_i = -jointAxisFrames[i].rotation().col(2);
+        Eigen::Vector3d p_i = jointAxisFrames[i].translation();
+
+        if (tableMDH[i].isRevolute)
+        {
+            J.block<3, 1>(0, i) = z_i.cross(p_e - p_i);
+            J.block<3, 1>(3, i) = z_i;
+        }
+        else
+        {
+            J.block<3, 1>(0, i) = z_i;
+            J.block<3, 1>(3, i).setZero();
+        }
+    }
+
+    return J;
+}
+Eigen::VectorXd Arm::computeDLSStep(const Eigen::Vector3d &targetPos,
+                                    const Eigen::Quaterniond &targetOri,
+                                    double lambda) const
+{
+    if (noOfLinks == 0)
+        return Eigen::VectorXd::Zero(1);
+
+    unsigned int eeLink = noOfLinks - 1;
+    Eigen::MatrixXd J = computeJacobian(eeLink);
+
+    // Get current end-effector pose
+    auto transforms = fetchLinkTransformations();
+    if (transforms.empty())
+        return Eigen::VectorXd::Zero(noOfLinks);
+
+    Eigen::Isometry3d T_ee = transforms[eeLink];
+    Eigen::Vector3d p_current = T_ee.translation();
+    Eigen::Quaterniond ori_current(T_ee.rotation());
+
+    // Position error
+    Eigen::Vector3d pos_error = targetPos - p_current;
+    
+    // Orientation error (quaternion difference → axis-angle)
+    Eigen::Quaterniond ori_error = targetOri * ori_current.inverse();
+    
+    if (ori_error.w() < 0)  // Shortest path
+        ori_error.coeffs() *= -1; 
+    Eigen::AngleAxisd aa(ori_error);
+    Eigen::Vector3d rot_error = aa.angle() * aa.axis();
+
+    // Combined error vector
+    Eigen::VectorXd dx(6);
+    dx << pos_error, rot_error;
+
+    // DLS: Δq = J^T * (J*J^T + λ²I)^(-1) * Δx
+    Eigen::MatrixXd JJT = J * J.transpose();
+    Eigen::MatrixXd damped = JJT + lambda * lambda * Eigen::MatrixXd::Identity(6, 6);
+    Eigen::VectorXd dq = J.transpose() * damped.ldlt().solve(dx);
+
+    return dq;
+}

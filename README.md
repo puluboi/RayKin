@@ -13,9 +13,14 @@ Plan is to implement a dampened minimal least square-based inverse kinematics so
 The end goal is to have a robot arm that can move objects
 
 ### Videos / demos:
+# Frame & IK functionality:
+https://github.com/user-attachments/assets/acb2a514-57c1-40a3-9443-aa75757f2861
 
 https://github.com/user-attachments/assets/3f4e4b3b-d572-45a9-b3ca-53d6ea3bb95a
 
 https://github.com/user-attachments/assets/db4c3ff1-2478-496d-b107-438382fb761b
+
+
+
 
 

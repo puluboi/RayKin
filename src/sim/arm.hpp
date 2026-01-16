@@ -52,6 +52,9 @@ struct MDHRow
 class Arm
 {
 public:
+// Inverse Kinematics
+Eigen::VectorXd computeDLSStep(const Eigen::Vector3d &targetPos, const Eigen::Quaterniond &targetOri, double lambda) const;
+
     Arm(Eigen::Vector3d origWorldPos_, Eigen::Quaterniond origWorldRot_, const std::string pathToURDF);
     bool incrementTargetAngle(unsigned int link, double angle);
     bool setTargetAngle(unsigned int link, double rot);
@@ -79,8 +82,9 @@ private:
     bool setLinkAngle(unsigned int link, double angle);
     bool addLinkAngle(unsigned int link, double angle);
 
-    Eigen::Vector<double, 6> computeJointJacobianColumn(unsigned int joint) const;
+    Eigen::MatrixXd computeJacobian(unsigned int link) const;
 
+    
     bool setLinkLength(unsigned int link, double length);
     bool addLinkLength(unsigned int link, double length);
 

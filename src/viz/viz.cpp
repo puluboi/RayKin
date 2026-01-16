@@ -1,4 +1,5 @@
 #include "viz.hpp"
+#include "raymath.h"
 #include <iostream>
 #include <cmath>
 #include <sstream>
@@ -63,6 +64,56 @@ void Viz::setMDHControlCallback(std::function<bool(unsigned int, unsigned int, c
     setMDHParam = callback;
 }
 
+void Viz::setCreateFrameCallback(std::function<unsigned int(const std::string&)> callback)
+{
+    createFrame = callback;
+}
+
+void Viz::setDestroyFrameCallback(std::function<bool(unsigned int)> callback)
+{
+    destroyFrame = callback;
+}
+
+void Viz::setFrameParentCallback(std::function<bool(unsigned int, int, int)> callback)
+{
+    setFrameParent = callback;
+}
+
+void Viz::setFramePositionCallback(std::function<bool(unsigned int, double, double, double)> callback)
+{
+    setFramePosition = callback;
+}
+
+void Viz::setFrameRotationCallback(std::function<bool(unsigned int, double, double, double)> callback)
+{
+    setFrameRotation = callback;
+}
+
+void Viz::setFrameNameCallback(std::function<bool(unsigned int, const std::string&)> callback)
+{
+    setFrameName = callback;
+}
+
+void Viz::setGetFrameListCallback(std::function<std::vector<std::pair<unsigned int, std::string>>()> callback)
+{
+    getFrameList = callback;
+}
+
+void Viz::setArmTargetFrameCallback(std::function<bool(unsigned int, int)> callback)
+{
+    setArmTargetFrame = callback;
+}
+
+void Viz::setGetArmTargetFrameCallback(std::function<int(unsigned int)> callback)
+{
+    getArmTargetFrame = callback;
+}
+
+void Viz::setGetArmNumJointsCallback(std::function<unsigned int(unsigned int)> callback)
+{
+    getArmNumJoints = callback;
+}
+
 void Viz::update()
 {
     // Fetch latest simulation data
@@ -113,6 +164,9 @@ void Viz::update()
 
     // Handle MDH table editing
     updateMDHTable();
+    
+    // Handle frame UI
+    handleFrameUI();
 
     // Update camera based on user input
     updateCamera();
@@ -444,6 +498,7 @@ void Viz::render()
     if (cachedSnapshot)
     {
         renderArms(*cachedSnapshot);
+        renderFrames(*cachedSnapshot);
     }
 
     DrawGrid(10, 1.0f);
@@ -459,8 +514,9 @@ void Viz::render()
     // Render UI overlays
     renderSelectionUI();
     renderMDHTable2D();
+    renderFrameUI();
 
-    DrawText("Right click: camera | Click joint: select | Click near arm: MDH table", 10, screenHeight - 30, 10, GRAY);
+    DrawText("Right click: camera | Click joint: select | M: MDH table | F: Frames", 10, screenHeight - 30, 10, GRAY);
     DrawFPS(10, 10);
     EndDrawing();
 }
@@ -699,6 +755,7 @@ void Viz::handleArmSelection()
             mdhTableMode = false;
             mdhSelectedRow = -1;
             mdhSelectedCol = -1;
+            ikTargetDropdownOpen = false;  // Close IK dropdown too
             std::cout << "MDH Table mode OFF" << std::endl;
         }
     }
@@ -792,7 +849,7 @@ void Viz::renderMDHTable2D()
     const int colWidths[] = {35, 65, 65, 65, 65, 65, 65, 35}; // Link, α, a, d_off, θ_off, Type
     const int headerHeight = 25;
     int tableWidth = 35 + 65 + 65 + 65 + 65 + 65 + 65 + 35;
-    int tableHeight = headerHeight + (cachedMDHTable.size() + 1) * rowHeight + 40;
+    int tableHeight = headerHeight + (cachedMDHTable.size() + 1) * rowHeight + 80;  // Extra space for IK target
 
     int tableX = (int)tablePos2D.x - tableWidth / 2;
     int tableY = (int)tablePos2D.y;
@@ -926,7 +983,754 @@ void Viz::renderMDHTable2D()
         y += rowHeight;
     }
 
+    // IK Target section
+    y += 15;
+    DrawLine(tableX, y - 5, tableX + tableWidth, y - 5, Fade(BLACK, 0.5f));
+    
+    DrawText("IK Target:", tableX, y, 12, BLACK);
+    
+    // Get current target
+    int currentTargetId = -1;
+    std::string targetName = "None";
+    if (getArmTargetFrame)
+    {
+        currentTargetId = getArmTargetFrame(selectedArmIndex);
+        if (currentTargetId >= 0 && cachedSnapshot)
+        {
+            for (const auto& frame : cachedSnapshot->frames)
+            {
+                if (static_cast<int>(frame.id) == currentTargetId)
+                {
+                    targetName = frame.name + " (ID:" + std::to_string(frame.id) + ")";
+                    break;
+                }
+            }
+        }
+    }
+    
+    // Dropdown button
+    Rectangle ikDropdownBtn = {(float)(tableX + 70), (float)(y - 2), 150, 18};
+    bool hoverIKDropdown = CheckCollisionPointRec(mousePos, ikDropdownBtn);
+    DrawRectangleRec(ikDropdownBtn, hoverIKDropdown ? Fade(SKYBLUE, 0.5f) : Fade(GRAY, 0.3f));
+    DrawRectangleLinesEx(ikDropdownBtn, 1, BLACK);
+    
+    std::string btnText = "[" + targetName + "] v";
+    DrawText(btnText.c_str(), tableX + 75, y, 11, currentTargetId >= 0 ? ORANGE : DARKGRAY);
+    
+    if (hoverIKDropdown && mouseClicked && !textInputMode)
+    {
+        ikTargetDropdownOpen = !ikTargetDropdownOpen;
+        ikDropdownScrollOffset = 0;
+    }
+    
+    y += 22;
+    
+    // Render dropdown if open
+    if (ikTargetDropdownOpen)
+    {
+        renderIKTargetDropdown(tableX + 70, y, 180);
+    }
+
     // Instructions
     y += 10;
     DrawText("Click cell to edit | ENTER: Apply | ESC: Cancel", tableX, y, 10, GRAY);
+}
+
+void Viz::renderIKTargetDropdown(int x, int y, int width)
+{
+    if (!cachedSnapshot) return;
+    
+    Vector2 mousePos = GetMousePosition();
+    bool mouseClicked = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
+    
+    const int itemHeight = 18;
+    const int maxVisibleItems = 6;
+    
+    // Count items: "None" + all frames
+    int numFrames = cachedSnapshot->frames.size();
+    int numItems = numFrames + 1;  // +1 for "None" option
+    int visibleItems = std::min(numItems, maxVisibleItems);
+    int dropdownHeight = visibleItems * itemHeight + 4;
+    
+    // Background
+    DrawRectangle(x, y, width, dropdownHeight, Fade(DARKBLUE, 0.95f));
+    DrawRectangleLinesEx({(float)x, (float)y, (float)width, (float)dropdownHeight}, 1, WHITE);
+    
+    int itemY = y + 2;
+    
+    // "None" option to clear target
+    Rectangle noneRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+    bool hoverNone = CheckCollisionPointRec(mousePos, noneRect);
+    if (hoverNone) DrawRectangleRec(noneRect, Fade(ORANGE, 0.3f));
+    DrawText("None (disable IK)", x + 5, itemY + 2, 11, hoverNone ? WHITE : LIGHTGRAY);
+    
+    if (hoverNone && mouseClicked)
+    {
+        if (setArmTargetFrame)
+        {
+            setArmTargetFrame(selectedArmIndex, -1);
+        }
+        ikTargetDropdownOpen = false;
+    }
+    itemY += itemHeight;
+    
+    // Frame options (with scroll)
+    int startFrame = ikDropdownScrollOffset;
+    int endFrame = std::min(numFrames, startFrame + maxVisibleItems - 1);
+    
+    for (int i = startFrame; i < endFrame; ++i)
+    {
+        const auto& frame = cachedSnapshot->frames[i];
+        
+        Rectangle frameRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+        bool hoverFrame = CheckCollisionPointRec(mousePos, frameRect);
+        
+        // Highlight current target
+        int currentTarget = getArmTargetFrame ? getArmTargetFrame(selectedArmIndex) : -1;
+        bool isCurrentTarget = (static_cast<int>(frame.id) == currentTarget);
+        
+        if (isCurrentTarget)
+        {
+            DrawRectangleRec(frameRect, Fade(GREEN, 0.3f));
+        }
+        else if (hoverFrame)
+        {
+            DrawRectangleRec(frameRect, Fade(SKYBLUE, 0.3f));
+        }
+        
+        std::stringstream ss;
+        ss << frame.name << " (ID:" << frame.id << ")";
+        Color textColor = isCurrentTarget ? GREEN : (hoverFrame ? WHITE : LIGHTGRAY);
+        DrawText(ss.str().c_str(), x + 5, itemY + 2, 11, textColor);
+        
+        if (hoverFrame && mouseClicked)
+        {
+            if (setArmTargetFrame)
+            {
+                setArmTargetFrame(selectedArmIndex, frame.id);
+            }
+            ikTargetDropdownOpen = false;
+        }
+        itemY += itemHeight;
+    }
+    
+    // Scroll indicator if needed
+    if (numFrames > maxVisibleItems - 1)
+    {
+        if (ikDropdownScrollOffset > 0)
+        {
+            DrawText("^ scroll up", x + 5, y - 12, 9, GRAY);
+        }
+        if (endFrame < numFrames)
+        {
+            DrawText("v scroll down", x + 5, y + dropdownHeight + 2, 9, GRAY);
+        }
+    }
+    
+    // Scroll with mouse wheel when hovering dropdown
+    Rectangle dropdownArea = {(float)x, (float)y, (float)width, (float)dropdownHeight};
+    if (CheckCollisionPointRec(mousePos, dropdownArea))
+    {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0)
+        {
+            ikDropdownScrollOffset -= (int)wheel;
+            ikDropdownScrollOffset = std::max(0, std::min(ikDropdownScrollOffset, numFrames - maxVisibleItems + 1));
+        }
+    }
+    
+    // Close dropdown if clicking outside (but not on the button that opened it)
+    // The button is at y - 22 approximately, so expand the check area upward
+    Rectangle expandedArea = {(float)x - 70, (float)(y - 25), (float)(width + 70), (float)(dropdownHeight + 25)};
+    if (mouseClicked && !CheckCollisionPointRec(mousePos, expandedArea))
+    {
+        ikTargetDropdownOpen = false;
+    }
+}
+
+// ============================================================================
+// Frame Rendering & UI
+// ============================================================================
+
+void Viz::renderFrames(const SimSnapshot &snapshot)
+{
+    for (const auto& frame : snapshot.frames)
+    {
+        Eigen::Vector3d pos = frame.worldTransform.translation();
+        // Swap Y/Z for raylib coordinate system
+        Vector3 framePos = {(float)pos.x(), (float)pos.z(), (float)pos.y()};
+        
+        // Draw frame as a small cube + axes
+        bool isSelected = (selectedFrameId == static_cast<int>(frame.id));
+        bool isIKTarget = false;
+        
+        // Check if this frame is an IK target for any arm
+        for (size_t i = 0; i < snapshot.armTargetFrameIds.size(); ++i)
+        {
+            if (snapshot.armTargetFrameIds[i] == static_cast<int>(frame.id))
+            {
+                isIKTarget = true;
+                break;
+            }
+        }
+        
+        // Draw frame marker
+        Color frameColor = isIKTarget ? ORANGE : (isSelected ? YELLOW : MAGENTA);
+        DrawCube(framePos, 0.08f, 0.08f, 0.08f, frameColor);
+        DrawCubeWires(framePos, 0.10f, 0.10f, 0.10f, BLACK);
+        
+        // Draw coordinate axes at frame
+        drawAxis(frame.worldTransform, 0.25f);
+        
+        // Draw label above frame
+        Vector2 screenPos = GetWorldToScreen(framePos, camera);
+        if (screenPos.x > 0 && screenPos.x < screenWidth && 
+            screenPos.y > 0 && screenPos.y < screenHeight)
+        {
+            DrawText(frame.name.c_str(), (int)screenPos.x - 20, (int)screenPos.y - 20, 12, frameColor);
+        }
+    }
+}
+
+void Viz::handleFrameUI()
+{
+    // F key toggles frame menu
+    if (IsKeyPressed(KEY_F) && !textInputMode && frameInputField == FrameInputField::None)
+    {
+        frameMenuMode = !frameMenuMode;
+        frameDropdownState = FrameDropdownState::None;
+        if (frameMenuMode)
+        {
+            std::cout << "Frame menu opened" << std::endl;
+        }
+        else
+        {
+            std::cout << "Frame menu closed" << std::endl;
+        }
+    }
+    
+    if (!frameMenuMode) return;
+    
+    // Handle frame dragging
+    handleFrameDragging();
+    
+    // Handle transform text input mode
+    if (frameInputField != FrameInputField::None)
+    {
+        int key = GetCharPressed();
+        while (key > 0)
+        {
+            if ((key >= '0' && key <= '9') || key == '.' || key == '-')
+            {
+                if (frameTransformInputBuffer.length() < 12)
+                {
+                    frameTransformInputBuffer += (char)key;
+                }
+            }
+            key = GetCharPressed();
+        }
+        
+        if (IsKeyPressed(KEY_BACKSPACE) && !frameTransformInputBuffer.empty())
+        {
+            frameTransformInputBuffer.pop_back();
+        }
+        
+        if (IsKeyPressed(KEY_ENTER) && !frameTransformInputBuffer.empty())
+        {
+            try
+            {
+                double value = std::stod(frameTransformInputBuffer);
+                switch (frameInputField)
+                {
+                    case FrameInputField::PosX: framePositionInput[0] = value; break;
+                    case FrameInputField::PosY: framePositionInput[1] = value; break;
+                    case FrameInputField::PosZ: framePositionInput[2] = value; break;
+                    case FrameInputField::RotX: frameRotationInput[0] = value; break;
+                    case FrameInputField::RotY: frameRotationInput[1] = value; break;
+                    case FrameInputField::RotZ: frameRotationInput[2] = value; break;
+                    default: break;
+                }
+                
+                // Apply position change
+                if (frameInputField >= FrameInputField::PosX && frameInputField <= FrameInputField::PosZ)
+                {
+                    if (setFramePosition && selectedFrameId >= 0)
+                    {
+                        setFramePosition(selectedFrameId, 
+                            framePositionInput[0], framePositionInput[1], framePositionInput[2]);
+                    }
+                }
+                // Apply rotation change
+                else if (frameInputField >= FrameInputField::RotX && frameInputField <= FrameInputField::RotZ)
+                {
+                    if (setFrameRotation && selectedFrameId >= 0)
+                    {
+                        // Convert degrees to radians
+                        double rx = frameRotationInput[0] * M_PI / 180.0;
+                        double ry = frameRotationInput[1] * M_PI / 180.0;
+                        double rz = frameRotationInput[2] * M_PI / 180.0;
+                        setFrameRotation(selectedFrameId, rx, ry, rz);
+                    }
+                }
+            }
+            catch (...) { }
+            
+            frameInputField = FrameInputField::None;
+            frameTransformInputBuffer.clear();
+        }
+        
+        if (IsKeyPressed(KEY_ESCAPE))
+        {
+            frameInputField = FrameInputField::None;
+            frameTransformInputBuffer.clear();
+        }
+        
+        return;  // Don't process other inputs while typing
+    }
+    
+    // Handle frame selection by clicking (when not in dropdown or dragging)
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !IsCursorHidden() && cachedSnapshot 
+        && frameDropdownState == FrameDropdownState::None && !isDraggingFrame)
+    {
+        ray = GetMouseRay(GetMousePosition(), camera);
+        float closestDistance = 1000000.0f;
+        int hitFrameId = -1;
+        
+        for (const auto& frame : cachedSnapshot->frames)
+        {
+            Eigen::Vector3d pos = frame.worldTransform.translation();
+            Vector3 framePos = {(float)pos.x(), (float)pos.z(), (float)pos.y()};
+            
+            RayCollision hit = GetRayCollisionSphere(ray, framePos, 0.15f);
+            if (hit.hit && hit.distance < closestDistance)
+            {
+                closestDistance = hit.distance;
+                hitFrameId = frame.id;
+            }
+        }
+        
+        if (hitFrameId >= 0)
+        {
+            selectedFrameId = hitFrameId;
+            
+            for (const auto& frame : cachedSnapshot->frames)
+            {
+                if (static_cast<int>(frame.id) == selectedFrameId)
+                {
+                    Eigen::Vector3d pos = frame.worldTransform.translation();
+                    framePositionInput[0] = pos.x();
+                    framePositionInput[1] = pos.y();
+                    framePositionInput[2] = pos.z();
+                    
+                    // Extract rotation as Euler angles (approximate)
+                    Eigen::Matrix3d rot = frame.worldTransform.rotation();
+                    Eigen::Vector3d euler = rot.eulerAngles(0, 1, 2);  // XYZ order
+                    frameRotationInput[0] = euler.x() * 180.0 / M_PI;
+                    frameRotationInput[1] = euler.y() * 180.0 / M_PI;
+                    frameRotationInput[2] = euler.z() * 180.0 / M_PI;
+                    
+                    frameParentArmInput = frame.parentArmIndex;
+                    frameParentJointInput = frame.parentJointIndex;
+                    frameNameBuffer = frame.name;
+                    break;
+                }
+            }
+        }
+    }
+    
+    // N key: create new frame
+    if (IsKeyPressed(KEY_N) && createFrame)
+    {
+        unsigned int newId = createFrame("Frame_" + std::to_string(rand() % 1000));
+        selectedFrameId = newId;
+        std::cout << "Created new frame with ID: " << newId << std::endl;
+    }
+    
+    // DELETE key: destroy selected frame
+    if (IsKeyPressed(KEY_DELETE) && selectedFrameId >= 0 && destroyFrame)
+    {
+        if (destroyFrame(selectedFrameId))
+        {
+            std::cout << "Destroyed frame ID: " << selectedFrameId << std::endl;
+            selectedFrameId = -1;
+        }
+    }
+    
+    // I key: set selected frame as IK target for selected arm
+    if (IsKeyPressed(KEY_I) && selectedFrameId >= 0 && setArmTargetFrame)
+    {
+        setArmTargetFrame(selectedArmIndex, selectedFrameId);
+        std::cout << "Set Arm " << selectedArmIndex << " IK target to Frame " << selectedFrameId << std::endl;
+    }
+    
+    // U key: clear IK target for selected arm
+    if (IsKeyPressed(KEY_U) && setArmTargetFrame)
+    {
+        setArmTargetFrame(selectedArmIndex, -1);
+        std::cout << "Cleared IK target for Arm " << selectedArmIndex << std::endl;
+    }
+    
+    // ESC closes dropdown
+    if (IsKeyPressed(KEY_ESCAPE) && frameDropdownState != FrameDropdownState::None)
+    {
+        frameDropdownState = FrameDropdownState::None;
+    }
+}
+
+void Viz::handleFrameDragging()
+{
+    if (selectedFrameId < 0 || !cachedSnapshot) return;
+    
+    // Find selected frame's current position
+    Vector3 frameWorldPos = {0, 0, 0};
+    for (const auto& frame : cachedSnapshot->frames)
+    {
+        if (static_cast<int>(frame.id) == selectedFrameId)
+        {
+            Eigen::Vector3d pos = frame.worldTransform.translation();
+            frameWorldPos = {(float)pos.x(), (float)pos.z(), (float)pos.y()};
+            break;
+        }
+    }
+    
+    // Start dragging on middle mouse button
+    if (IsMouseButtonPressed(MOUSE_BUTTON_MIDDLE) && !IsCursorHidden())
+    {
+        ray = GetMouseRay(GetMousePosition(), camera);
+        RayCollision hit = GetRayCollisionSphere(ray, frameWorldPos, 0.2f);
+        
+        if (hit.hit)
+        {
+            isDraggingFrame = true;
+            // Create drag plane facing camera
+            dragPlaneNormal = Vector3Normalize(Vector3Subtract(camera.position, frameWorldPos));
+            dragOffset = Vector3Subtract(frameWorldPos, hit.point);
+        }
+    }
+    
+    // Continue dragging
+    if (isDraggingFrame && IsMouseButtonDown(MOUSE_BUTTON_MIDDLE))
+    {
+        ray = GetMouseRay(GetMousePosition(), camera);
+        
+        // Intersect ray with drag plane
+        float denom = Vector3DotProduct(dragPlaneNormal, ray.direction);
+        if (fabs(denom) > 0.0001f)
+        {
+            Vector3 planePoint = frameWorldPos;
+            float t = Vector3DotProduct(Vector3Subtract(planePoint, ray.position), dragPlaneNormal) / denom;
+            
+            if (t >= 0)
+            {
+                Vector3 newPos = Vector3Add(
+                    Vector3Add(ray.position, Vector3Scale(ray.direction, t)),
+                    dragOffset
+                );
+                
+                // Convert back to Eigen/Sim coordinates (swap Y/Z back)
+                framePositionInput[0] = newPos.x;
+                framePositionInput[1] = newPos.z;  // raylib Y -> Eigen Z
+                framePositionInput[2] = newPos.y;  // raylib Z -> Eigen Y
+                
+                if (setFramePosition)
+                {
+                    setFramePosition(selectedFrameId, 
+                        framePositionInput[0], framePositionInput[1], framePositionInput[2]);
+                }
+            }
+        }
+    }
+    
+    // Stop dragging
+    if (IsMouseButtonReleased(MOUSE_BUTTON_MIDDLE))
+    {
+        isDraggingFrame = false;
+    }
+}
+
+void Viz::renderFrameUI()
+{
+    if (!frameMenuMode) return;
+    
+    const int panelX = 10;
+    const int panelWidth = 320;
+    int panelY = screenHeight - 280;
+    int y = panelY;
+    int x = panelX;
+    
+    DrawRectangle(x - 5, y - 5, panelWidth, 275, Fade(DARKGRAY, 0.9f));
+    DrawRectangleLines(x - 5, y - 5, panelWidth, 275, WHITE);
+    
+    DrawText("FRAME MENU (F to toggle)", x, y, 16, YELLOW);
+    y += 22;
+    
+    // Show frame count
+    int frameCount = cachedSnapshot ? cachedSnapshot->frames.size() : 0;
+    std::stringstream ss;
+    ss << "Frames: " << frameCount;
+    DrawText(ss.str().c_str(), x, y, 12, WHITE);
+    y += 18;
+    
+    // Selected frame info
+    if (selectedFrameId >= 0)
+    {
+        ss.str("");
+        ss << "Selected: ID " << selectedFrameId << " (" << frameNameBuffer << ")";
+        DrawText(ss.str().c_str(), x, y, 12, YELLOW);
+        y += 18;
+        
+        // Position inputs (clickable)
+        DrawText("Position:", x, y, 11, WHITE);
+        y += 14;
+        
+        int inputX = x + 10;
+        renderFrameTransformInput(inputX, y, "X:", FrameInputField::PosX, framePositionInput[0]);
+        renderFrameTransformInput(inputX + 90, y, "Y:", FrameInputField::PosY, framePositionInput[1]);
+        renderFrameTransformInput(inputX + 180, y, "Z:", FrameInputField::PosZ, framePositionInput[2]);
+        y += 18;
+        
+        // Rotation inputs (clickable)
+        DrawText("Rotation (deg):", x, y, 11, WHITE);
+        y += 14;
+        
+        renderFrameTransformInput(inputX, y, "X:", FrameInputField::RotX, frameRotationInput[0]);
+        renderFrameTransformInput(inputX + 90, y, "Y:", FrameInputField::RotY, frameRotationInput[1]);
+        renderFrameTransformInput(inputX + 180, y, "Z:", FrameInputField::RotZ, frameRotationInput[2]);
+        y += 20;
+        
+        // Parent dropdown button
+        DrawText("Parent:", x, y, 11, WHITE);
+        
+        ss.str("");
+        if (frameParentArmInput < 0)
+        {
+            ss << "[World]";
+        }
+        else
+        {
+            ss << "[Arm " << frameParentArmInput << " J" << frameParentJointInput << "]";
+        }
+        
+        Rectangle dropdownBtn = {(float)(x + 50), (float)(y - 2), 120, 16};
+        bool hoverDropdown = CheckCollisionPointRec(GetMousePosition(), dropdownBtn);
+        DrawRectangleRec(dropdownBtn, hoverDropdown ? Fade(SKYBLUE, 0.5f) : Fade(GRAY, 0.3f));
+        DrawRectangleLinesEx(dropdownBtn, 1, WHITE);
+        DrawText(ss.str().c_str(), x + 55, y, 11, LIGHTGRAY);
+        
+        if (hoverDropdown && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            frameDropdownState = FrameDropdownState::SelectArm;
+            dropdownScrollOffset = 0;
+        }
+        y += 22;
+        
+        // Render dropdown if open
+        if (frameDropdownState != FrameDropdownState::None)
+        {
+            renderFrameDropdown(x + 50, y, 150);
+        }
+    }
+    else
+    {
+        DrawText("No frame selected", x, y, 12, GRAY);
+        DrawText("(Click frame in 3D view to select)", x, y + 14, 10, DARKGRAY);
+        y += 30;
+    }
+    
+    y += 5;
+    
+    // Show current arm's IK target
+    if (getArmTargetFrame)
+    {
+        int targetId = getArmTargetFrame(selectedArmIndex);
+        ss.str("");
+        if (targetId >= 0)
+        {
+            ss << "Arm " << selectedArmIndex << " IK target: Frame " << targetId;
+            DrawText(ss.str().c_str(), x, y, 12, ORANGE);
+        }
+        else
+        {
+            ss << "Arm " << selectedArmIndex << " IK target: None";
+            DrawText(ss.str().c_str(), x, y, 12, GRAY);
+        }
+    }
+    y += 22;
+    
+    // Controls help
+    DrawText("Controls:", x, y, 11, WHITE);
+    y += 14;
+    DrawText("  N: New frame | DEL: Delete frame", x, y, 10, GRAY);
+    y += 12;
+    DrawText("  I: Set as IK target | U: Clear IK target", x, y, 10, GRAY);
+    y += 12;
+    DrawText("  Middle-click + drag: Move frame in 3D", x, y, 10, GRAY);
+    y += 12;
+    DrawText("  Click values to type new position/rotation", x, y, 10, GRAY);
+}
+
+void Viz::renderFrameDropdown(int x, int y, int width)
+{
+    Vector2 mousePos = GetMousePosition();
+    const int itemHeight = 18;
+    const int maxVisibleItems = 8;
+    
+    if (frameDropdownState == FrameDropdownState::SelectArm)
+    {
+        // Get number of arms
+        int numArms = cachedSnapshot ? cachedSnapshot->armTransforms.size() : 0;
+        int numItems = numArms + 1;  // +1 for "World" option
+        
+        int visibleItems = std::min(numItems, maxVisibleItems);
+        int dropdownHeight = visibleItems * itemHeight + 4;
+        
+        DrawRectangle(x, y, width, dropdownHeight, Fade(DARKBLUE, 0.95f));
+        DrawRectangleLinesEx({(float)x, (float)y, (float)width, (float)dropdownHeight}, 1, WHITE);
+        
+        int itemY = y + 2;
+        
+        // World option
+        Rectangle worldRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+        bool hoverWorld = CheckCollisionPointRec(mousePos, worldRect);
+        if (hoverWorld) DrawRectangleRec(worldRect, Fade(SKYBLUE, 0.3f));
+        DrawText("World", x + 5, itemY + 2, 11, hoverWorld ? WHITE : LIGHTGRAY);
+        
+        if (hoverWorld && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            if (setFrameParent && selectedFrameId >= 0)
+            {
+                setFrameParent(selectedFrameId, -1, -1);
+                frameParentArmInput = -1;
+                frameParentJointInput = -1;
+            }
+            frameDropdownState = FrameDropdownState::None;
+        }
+        itemY += itemHeight;
+        
+        // Arm options
+        for (int i = 0; i < numArms && (i + 1) < visibleItems; ++i)
+        {
+            Rectangle armRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+            bool hoverArm = CheckCollisionPointRec(mousePos, armRect);
+            if (hoverArm) DrawRectangleRec(armRect, Fade(SKYBLUE, 0.3f));
+            
+            std::stringstream ss;
+            ss << "Arm " << i << " >";
+            DrawText(ss.str().c_str(), x + 5, itemY + 2, 11, hoverArm ? WHITE : LIGHTGRAY);
+            
+            if (hoverArm && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            {
+                frameParentArmInput = i;
+                frameDropdownState = FrameDropdownState::SelectJoint;
+                dropdownScrollOffset = 0;
+            }
+            itemY += itemHeight;
+        }
+    }
+    else if (frameDropdownState == FrameDropdownState::SelectJoint)
+    {
+        // Get number of joints for selected arm
+        unsigned int numJoints = 0;
+        if (getArmNumJoints && frameParentArmInput >= 0)
+        {
+            numJoints = getArmNumJoints(frameParentArmInput);
+        }
+        else if (cachedSnapshot && frameParentArmInput >= 0 
+                 && (size_t)frameParentArmInput < cachedSnapshot->armTransforms.size())
+        {
+            numJoints = cachedSnapshot->armTransforms[frameParentArmInput].size();
+        }
+        
+        int numItems = numJoints + 1;  // +1 for "Back" option
+        int visibleItems = std::min((int)numItems, maxVisibleItems);
+        int dropdownHeight = visibleItems * itemHeight + 4;
+        
+        DrawRectangle(x, y, width, dropdownHeight, Fade(DARKBLUE, 0.95f));
+        DrawRectangleLinesEx({(float)x, (float)y, (float)width, (float)dropdownHeight}, 1, WHITE);
+        
+        int itemY = y + 2;
+        
+        // Back option
+        Rectangle backRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+        bool hoverBack = CheckCollisionPointRec(mousePos, backRect);
+        if (hoverBack) DrawRectangleRec(backRect, Fade(ORANGE, 0.3f));
+        DrawText("< Back", x + 5, itemY + 2, 11, hoverBack ? WHITE : ORANGE);
+        
+        if (hoverBack && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            frameDropdownState = FrameDropdownState::SelectArm;
+        }
+        itemY += itemHeight;
+        
+        // Joint options (with scroll)
+        int startJoint = dropdownScrollOffset;
+        int endJoint = std::min((int)numJoints, startJoint + maxVisibleItems - 1);
+        
+        for (int j = startJoint; j < endJoint; ++j)
+        {
+            Rectangle jointRect = {(float)x, (float)itemY, (float)width, (float)itemHeight};
+            bool hoverJoint = CheckCollisionPointRec(mousePos, jointRect);
+            if (hoverJoint) DrawRectangleRec(jointRect, Fade(SKYBLUE, 0.3f));
+            
+            std::stringstream ss;
+            ss << "Joint " << j;
+            DrawText(ss.str().c_str(), x + 5, itemY + 2, 11, hoverJoint ? WHITE : LIGHTGRAY);
+            
+            if (hoverJoint && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            {
+                if (setFrameParent && selectedFrameId >= 0)
+                {
+                    setFrameParent(selectedFrameId, frameParentArmInput, j);
+                    frameParentJointInput = j;
+                }
+                frameDropdownState = FrameDropdownState::None;
+            }
+            itemY += itemHeight;
+        }
+        
+        // Scroll with mouse wheel
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0)
+        {
+            dropdownScrollOffset -= (int)wheel;
+            dropdownScrollOffset = std::max(0, std::min(dropdownScrollOffset, (int)numJoints - maxVisibleItems + 1));
+        }
+    }
+}
+
+bool Viz::renderFrameTransformInput(int x, int& y, const char* label, FrameInputField field, float& value)
+{
+    Vector2 mousePos = GetMousePosition();
+    
+    DrawText(label, x, y, 10, LIGHTGRAY);
+    
+    Rectangle valueRect = {(float)(x + 18), (float)(y - 2), 65, 14};
+    bool hover = CheckCollisionPointRec(mousePos, valueRect);
+    bool isEditing = (frameInputField == field);
+    
+    if (isEditing)
+    {
+        DrawRectangleRec(valueRect, Fade(YELLOW, 0.3f));
+        DrawRectangleLinesEx(valueRect, 1, YELLOW);
+        std::string displayText = frameTransformInputBuffer + "_";
+        DrawText(displayText.c_str(), x + 20, y, 10, YELLOW);
+    }
+    else
+    {
+        DrawRectangleRec(valueRect, hover ? Fade(SKYBLUE, 0.2f) : Fade(BLACK, 0.2f));
+        DrawRectangleLinesEx(valueRect, 1, hover ? SKYBLUE : GRAY);
+        
+        std::stringstream ss;
+        ss << std::fixed << std::setprecision(2) << value;
+        DrawText(ss.str().c_str(), x + 20, y, 10, hover ? WHITE : LIGHTGRAY);
+        
+        if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+        {
+            frameInputField = field;
+            frameTransformInputBuffer.clear();
+            return true;
+        }
+    }
+    
+    return false;
 }

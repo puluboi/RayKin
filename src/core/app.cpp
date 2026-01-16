@@ -53,6 +53,51 @@ App::App()
         }
         return false;
     });
+    
+    // Connect frame management callbacks
+    viz.setCreateFrameCallback([this](const std::string& name) -> unsigned int {
+        return sim.createFrame(name);
+    });
+    
+    viz.setDestroyFrameCallback([this](unsigned int frameId) -> bool {
+        return sim.destroyFrame(frameId);
+    });
+    
+    viz.setFrameParentCallback([this](unsigned int frameId, int armIdx, int jointIdx) -> bool {
+        return sim.setFrameParent(frameId, armIdx, jointIdx);
+    });
+    
+    viz.setFramePositionCallback([this](unsigned int frameId, double x, double y, double z) -> bool {
+        return sim.setFrameLocalPosition(frameId, Eigen::Vector3d(x, y, z));
+    });
+    
+    viz.setFrameNameCallback([this](unsigned int frameId, const std::string& name) -> bool {
+        return sim.setFrameName(frameId, name);
+    });
+    
+    viz.setGetFrameListCallback([this]() -> std::vector<std::pair<unsigned int, std::string>> {
+        return sim.getFrameList();
+    });
+    
+    viz.setArmTargetFrameCallback([this](unsigned int armIdx, int frameId) -> bool {
+        return sim.setArmTargetFrame(armIdx, frameId);
+    });
+    
+    viz.setGetArmTargetFrameCallback([this](unsigned int armIdx) -> int {
+        return sim.getArmTargetFrame(armIdx);
+    });
+    
+    viz.setFrameRotationCallback([this](unsigned int frameId, double rx, double ry, double rz) -> bool {
+        return sim.setFrameLocalRotationEuler(frameId, rx, ry, rz);
+    });
+    
+    viz.setGetArmNumJointsCallback([this](unsigned int armIdx) -> unsigned int {
+        auto arm = sim.getArm(armIdx);
+        if (arm) {
+            return arm->getNumLinks();
+        }
+        return 0;
+    });
 
     simThread = std::thread([this]()
                             { sim.run(); });
