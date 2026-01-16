@@ -6,9 +6,8 @@ User can modifty the robot joint MDH table & rotate the joints using pgUp & pgDo
 
 ## State of The Project
 ### Current State: 
-Currently implements robot loading from an urdf-style xml file, mdh-table modification, forward kinematics and a usable working user interface.
-### Next Features: 
-Plan is to implement a dampened minimal least square-based inverse kinematics solver. 
+Currently implements robot loading from an urdf-style xml file, mdh-table modification, forward kinematics, inverse kinematics, frame system and a usable working user interface.
+
 ### End Goal:
 The end goal is to have a robot arm that can move objects
 
