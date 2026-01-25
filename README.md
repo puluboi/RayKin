@@ -4,6 +4,7 @@
 Minimal C++ Robotics Kinematis demo app. Uses C++ RayLib for visualization.
 User can modifty the robot joint MDH table & rotate the joints using pgUp & pgDown or by typing a value.
 
+The GUI is built using RayKin.
 ## State of The Project
 ### Current State: 
 Currently implements robot loading from an urdf-style xml file, mdh-table modification, forward kinematics, inverse kinematics, frame system and a usable working user interface.
